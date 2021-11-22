@@ -73,7 +73,6 @@ class Truss:
 
         return K
 
-
     def compute_stiffness_matrix_derivative(self, y, z=None, alpha=1.0):
         """
         Compute the result:
@@ -255,7 +254,7 @@ class Truss:
             eigs, phir = scipy.linalg.eigh(Kr.todense(), b=Mr.todense())
             k = len(eigs)
 
-        phi = np.zeros((self.nvars, k))
+        phi = np.zeros((2*self.nnodes, k))
         for i in range(k):
             phi[self.reduced, i] = phir[:, i]
 
@@ -455,12 +454,12 @@ conn.append([2*(M-1), 2*(M-1)+1])
 pos = []
 for i in range(M):
     u = 1.0*i/(M-1.0)
-    y = 0.25*L*4.0*u*(1.0 - u)
-    pos.append([i*L, y])
-    pos.append([i*L, y+L])
+    pos.append([i*L, 0.0])
+    pos.append([i*L, L])
 
 # Set the boundary conditions
-bcs = [0, 1, 2*(2*(M-1)) + 1]
+bcs = [0, 1,
+       2*(2*(M-1)) + 1]
 
 # Apply the loads
 force = [0]*(2*len(pos))
@@ -474,15 +473,76 @@ m_fixed = (2*M*np.sqrt(2) + 4*M)*L*rho
 # Set the initial bar areas
 x0 = np.ones(len(conn))
 
+Ascale = 1e-3
+objscale = 1e5
 
-objective = lambda x : truss.compliance(A)
+objective = lambda x : truss.compliance(Ascale*x)/objscale
+gradient = lambda x : truss.compliance_gradient(Ascale*x)*Ascale/objscale
 
+epsilon = 1e-6
+p = np.random.uniform(size=x0.shape)
+fd = (objective(x0 + epsilon*p) - objective(x0))/epsilon
+result = np.dot(p, gradient(x0))
 
+print('Objective check')
+print(objective(x0))
+print(fd)
+print(result)
 
+m0 = truss.compute_mass_gradient()
+mass_fixed = 1e-3*np.sum(m0)
 
-res = minimize(truss.compliance, x0, jac=truss.compliance_gradient,
+mass_con = lambda x : 1.0 - np.dot(m0, Ascale*x)/mass_fixed
+mass_con_gradient = lambda x : - Ascale*m0/mass_fixed
+
+fd = (mass_con(x0 + epsilon*p) - mass_con(x0))/epsilon
+result = np.dot(p, mass_con_gradient(x0))
+
+print('Mass constraint check')
+print('fixed mass = ', mass_fixed)
+print(mass_con(x0))
+print(fd)
+print(result)
+
+omega0 = 500.0
+
+freq_con = lambda x : truss.ks_min_eigenvalue(Ascale*x)[0]/omega0**2 - 1.0
+freq_con_gradient = lambda x : Ascale*truss.ks_min_eigenvalue(Ascale*x)[1]/omega0**2
+
+fd = (freq_con(x0 + epsilon*p) - freq_con(x0))/epsilon
+result = np.dot(p, freq_con_gradient(x0))
+
+print('KS constraint check')
+print(freq_con(x0))
+print(fd)
+print(result)
+
+A_min = 1e-5
+A_max = 10.0
+
+x_min = A_min/Ascale
+x_max = A_max/Ascale
+
+x0 = x_min*np.ones(x0.shape)
+# x0 = x_min + (x_max - x_min)*np.random.uniform(size=len(conn))
+
+res = minimize(objective, x0, jac=gradient, options={'maxiter' : 500},
                method='SLSQP',
-               bounds=[(1e-4, 10.0)]*len(x0),
+               bounds=[(x_min, x_max)]*len(x0),
                constraints=[{'type': 'ineq',
-                             'fun': lambda x: (m_fixed - np.dot(m0, x)),
-                             'jac': lambda x: -np.array(m0)}])
+                             'fun': mass_con,
+                             'jac': mass_con_gradient},
+                             {'type': 'ineq',
+                             'fun': freq_con,
+                             'jac': freq_con_gradient}
+                             ])
+print(res)
+
+Astar = Ascale*res.x
+print('Design variables: ', res.x)
+print('Bar areas:        ', Ascale*res.x)
+
+print(truss.frequencies(Astar)[0])
+
+truss.plot_areas(Astar)
+plt.show()
