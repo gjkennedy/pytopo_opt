@@ -7,6 +7,8 @@ import matplotlib.pylab as plt
 import matplotlib.tri as tri
 from mpi4py import MPI
 from paropt import ParOpt
+import pickle
+import argparse
 
 class NodeFilter:
     """
@@ -160,7 +162,7 @@ class NodeFilter:
             rho = self.F.dot(x)
         else:
             rho = self.A(self.B.dot(x))
-        
+
         if self.projection:
             denom = np.tanh(self.beta*self.eta) + np.tanh(self.beta*(1.0 - self.eta))
             grad = g*((self.beta/denom) * 1.0/np.cosh(self.beta*(rho - self.eta))**2)
@@ -635,49 +637,68 @@ class TopologyOptimization(ParOpt.Problem):
 
         return
 
-lx = 20
-m = 128
+p = argparse.ArgumentParser()
+p.add_argument('--case', type=str, default=None,
+        help='Name of the case file')
+args = p.parse_args()
 
-ly = 10
-n = 64
+if args.case is None:
+    # Generate the square domain problem by default
+    lx = 20
+    m = 128
 
-nelems = m*n
-nnodes = (m + 1)*(n + 1)
+    ly = 10
+    n = 64
 
-y = np.linspace(0, ly, n + 1)
-x = np.linspace(0, lx, m + 1)
-nodes = np.arange(0, (n + 1)*(m + 1)).reshape((n + 1, m + 1))
+    nelems = m*n
+    nnodes = (m + 1)*(n + 1)
 
-# Set the node locations
-X = np.zeros((nnodes, 2))
-for j in range(n + 1):
-    for i in range(m + 1):
-        X[i + j*(m + 1), 0] = x[i]
-        X[i + j*(m + 1), 1] = y[j]
+    y = np.linspace(0, ly, n + 1)
+    x = np.linspace(0, lx, m + 1)
+    nodes = np.arange(0, (n + 1)*(m + 1)).reshape((n + 1, m + 1))
 
-# Set the connectivity
-conn = np.zeros((nelems, 4), dtype=int)
-for j in range(n):
-    for i in range(m):
-        conn[i + j*m, 0] = nodes[j, i]
-        conn[i + j*m, 1] = nodes[j, i + 1]
-        conn[i + j*m, 2] = nodes[j + 1, i + 1]
-        conn[i + j*m, 3] = nodes[j + 1, i]
+    # Set the node locations
+    X = np.zeros((nnodes, 2))
+    for j in range(n + 1):
+        for i in range(m + 1):
+            X[i + j*(m + 1), 0] = x[i]
+            X[i + j*(m + 1), 1] = y[j]
 
-# Set the constrained degrees of freedom at each node
-bcs = {}
-for j in range(n):
-    bcs[nodes[j, 0]] = [0, 1]
+    # Set the connectivity
+    conn = np.zeros((nelems, 4), dtype=int)
+    for j in range(n):
+        for i in range(m):
+            conn[i + j*m, 0] = nodes[j, i]
+            conn[i + j*m, 1] = nodes[j, i + 1]
+            conn[i + j*m, 2] = nodes[j + 1, i + 1]
+            conn[i + j*m, 3] = nodes[j + 1, i]
 
-P = 10.0
-forces = {}
-pn = n//10
-for j in range(pn):
-    forces[nodes[j, -1]] = [0, -P/pn]
+    # Set the constrained degrees of freedom at each node
+    bcs = {}
+    for j in range(n):
+        bcs[nodes[j, 0]] = [0, 1]
+
+    P = 10.0
+    forces = {}
+    pn = n//10
+    for j in range(pn):
+        forces[nodes[j, -1]] = [0, -P/pn]
+
+    r0 = 0.05*np.min((lx, ly))
+else:
+    with open(args.case, 'rb') as file:
+        pkl = pickle.load(file)
+
+    nelems = pkl['nelems']
+    nnodes = pkl['nnodes']
+    X = pkl['X']
+    conn = pkl['conn']
+    bcs = pkl['bcs']
+    forces = pkl['forces']
+    r0 = 0.05
 
 # Create the filter
-r0 = 0.05*np.min((lx, ly))
-fltr = NodeFilter(conn, X, r0, ftype='spatial', projection=True)
+fltr = NodeFilter(conn, X, r0, ftype='spatial', projection=False)
 topo = TopologyOptimization(fltr, conn, X, bcs, forces)
 
 topo.checkGradients()
