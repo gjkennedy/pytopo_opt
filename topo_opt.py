@@ -155,10 +155,15 @@ class NodeFilter:
 
         return rho
 
-    def applyGradient(self, g, rho=None):
+    def applyGradient(self, g, x, rho=None):
+        if self.F is not None:
+            rho = self.F.dot(x)
+        else:
+            rho = self.A(self.B.dot(x))
+        
         if self.projection:
             denom = np.tanh(self.beta*self.eta) + np.tanh(self.beta*(1.0 - self.eta))
-            grad = (self.beta/denom) * 1.0/np.cosh(self.beta*(rho - self.eta))**2
+            grad = g*((self.beta/denom) * 1.0/np.cosh(self.beta*(rho - self.eta))**2)
         else:
             grad = g
 
@@ -451,7 +456,7 @@ class TopologyOptimization(ParOpt.Problem):
 
         return self.f.dot(self.u)
 
-    def compliance_gradient(self):
+    def compliance_gradient(self, x):
         # Compute the gradient of the compliance
         dfdC = -1.0*self.adjoint_residual_product(self.u, self.u)
 
@@ -467,7 +472,7 @@ class TopologyOptimization(ParOpt.Problem):
             np.add.at(dfdrho, self.conn[:, i], dfdrhoE)
         dfdrho *= 0.25
 
-        return self.fltr.applyGradient(dfdrho)
+        return self.fltr.applyGradient(dfdrho, x)
 
     def eval_area_gradient(self):
 
@@ -524,7 +529,7 @@ class TopologyOptimization(ParOpt.Problem):
             fig, ax = plt.subplots()
             self.plot(self.rho, ax=ax)
             ax.set_aspect('equal', 'box')
-            plt.savefig('topology.png')
+            plt.savefig('topology_proj.png')
             plt.close()
 
         return fail, obj, con
@@ -535,8 +540,8 @@ class TopologyOptimization(ParOpt.Problem):
         """
 
         fail = 0
-        g[:] = self.compliance_gradient()
-        A[0][:] = -self.fltr.applyGradient(self.area_gradient_rho[:])
+        g[:] = self.compliance_gradient(x[:])
+        A[0][:] = -self.fltr.applyGradient(self.area_gradient_rho[:],x[:])
 
         return fail
 
@@ -611,7 +616,7 @@ for j in range(pn):
 
 # Create the filter
 r0 = 0.05*np.min((lx, ly))
-fltr = NodeFilter(conn, X, r0, ftype='spatial')
+fltr = NodeFilter(conn, X, r0, ftype='spatial', projection=True)
 topo = TopologyOptimization(fltr, conn, X, bcs, forces)
 
 topo.checkGradients()
