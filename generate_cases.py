@@ -409,7 +409,7 @@ if __name__ == '__main__':
     for prob in ['lbracket', 'cantilever', 'michell']:
         for n in [32, 64, 96]:
             for use_hole in [ True, False ]:
-                if prob == 'MBB':
+                if prob == 'cantilever':
                     AR = 3
 
                 nelems, nnodes, conn_tmr, X, bcs, forces = create_mesh(

@@ -205,7 +205,7 @@ class NodeFilter:
 
 class TopologyOptimization(ParOpt.Problem):
     def __init__(self, fltr, conn, X, bcs, forces={},
-                 E=10.0, nu=0.3, P=3.0, area_fraction=0.4,
+                 E=10.0, nu=0.3, P=3.0, density=1.0, area_fraction=0.4,
                  draw_history=True):
 
         self.fltr = fltr
@@ -213,6 +213,7 @@ class TopologyOptimization(ParOpt.Problem):
         self.X = np.array(X)
         self.P = P
         self.draw_history = draw_history
+        self.density = density
 
         self.nelems = self.conn.shape[0]
         self.nnodes = int(np.max(self.conn)) + 1
@@ -348,7 +349,10 @@ class TopologyOptimization(ParOpt.Problem):
 
         return K
 
-    def adjoint_residual_product(self, psi, u):
+    def stiffness_matrix_derivative(self, psi, u):
+        """
+        Compute the derivative of the stiffness matrix times the vectors psi and u
+        """
         dfdC = np.zeros((self.nelems, 3, 3))
 
         # Compute the element stiffness matrix
@@ -413,6 +417,119 @@ class TopologyOptimization(ParOpt.Problem):
 
         return dfdC
 
+    def assemble_mass_matrix(self, rhoE):
+        """
+        Assemble the mass matrix
+        """
+
+        # Compute the element stiffness matrix
+        gauss_pts = [-1.0/np.sqrt(3.0), 1.0/np.sqrt(3.0)]
+
+        # Assemble all of the the 8 x 8 element mass matrices
+        Me = np.zeros((self.nelems, 8, 8))
+        He = np.zeros((self.nelems, 2, 8))
+
+        J = np.zeros((self.nelems, 2, 2))
+        invJ = np.zeros(J.shape)
+
+        # Compute the x and y coordinates of each element
+        xe = self.X[self.conn, 0]
+        ye = self.X[self.conn, 1]
+
+        for j in range(2):
+            for i in range(2):
+                xi = gauss_pts[i]
+                eta = gauss_pts[j]
+                N = 0.25*np.array([(1.0 - xi)*(1.0 - eta),
+                                   (1.0 + xi)*(1.0 - eta),
+                                   (1.0 + xi)*(1.0 + eta),
+                                   (1.0 - xi)*(1.0 + eta)])
+                Nxi = np.array([-(1.0 - eta), (1.0 - eta), (1.0 + eta), -(1.0 + eta)])
+                Neta = np.array([-(1.0 - xi), -(1.0 + xi), (1.0 + xi), (1.0 - xi)])
+
+                # Compute the Jacobian transformation at each quadrature points
+                J[:, 0, 0] = np.dot(xe, Nxi)
+                J[:, 1, 0] = np.dot(ye, Nxi)
+                J[:, 0, 1] = np.dot(xe, Neta)
+                J[:, 1, 1] = np.dot(ye, Neta)
+
+                # Compute the inverse of the Jacobian
+                detJ = J[:, 0, 0]*J[:, 1, 1] - J[:, 0, 1]*J[:, 1, 0]
+
+                # Set the B matrix for each element
+                He[:, 0, ::2] = N
+                He[:, 1, 1::2] = N
+
+                # This is a fancy (and fast) way to compute the element matrices
+                Me += self.density*np.einsum('n,nij,nil -> njl', rhoE*detJ, He, He)
+
+        M = sparse.coo_matrix((Me.flatten(), (self.i, self.j)))
+        M = M.tocsr()
+
+        return M
+
+    def mass_matrix_derivative(self, u, v):
+        """
+        Compute the derivative of the mass matrix
+        """
+
+        dfdrhoE = np.zeros(self.nelems)
+
+        # Compute the element stiffness matrix
+        gauss_pts = [-1.0/np.sqrt(3.0), 1.0/np.sqrt(3.0)]
+
+        J = np.zeros((self.nelems, 2, 2))
+        invJ = np.zeros(J.shape)
+
+        # The interpolation matrix for each element
+        He = np.zeros((self.nelems, 2, 8))
+
+        # Compute the x and y coordinates of each element
+        xe = self.X[self.conn, 0]
+        ye = self.X[self.conn, 1]
+
+        # The element-wise variables
+        ue = np.zeros((self.nelems, 8))
+        ve = np.zeros((self.nelems, 8))
+
+        ue[:, ::2] = u[2*self.conn]
+        ue[:, 1::2] = u[2*self.conn+1]
+
+        ve[:, ::2] = v[2*self.conn]
+        ve[:, 1::2] = v[2*self.conn+1]
+
+        for j in range(2):
+            for i in range(2):
+                xi = gauss_pts[i]
+                eta = gauss_pts[j]
+                N = 0.25*np.array([(1.0 - xi)*(1.0 - eta),
+                                   (1.0 + xi)*(1.0 - eta),
+                                   (1.0 + xi)*(1.0 + eta),
+                                   (1.0 - xi)*(1.0 + eta)])
+                Nxi = np.array([-(1.0 - eta), (1.0 - eta), (1.0 + eta), -(1.0 + eta)])
+                Neta = np.array([-(1.0 - xi), -(1.0 + xi), (1.0 + xi), (1.0 - xi)])
+
+                # Compute the Jacobian transformation at each quadrature points
+                J[:, 0, 0] = np.dot(xe, Nxi)
+                J[:, 1, 0] = np.dot(ye, Nxi)
+                J[:, 0, 1] = np.dot(xe, Neta)
+                J[:, 1, 1] = np.dot(ye, Neta)
+
+                # Compute the inverse of the Jacobian
+                detJ = J[:, 0, 0]*J[:, 1, 1] - J[:, 0, 1]*J[:, 1, 0]
+
+                # Set the B matrix for each element
+                He[:, 0, ::2] = N
+                He[:, 1, 1::2] = N
+
+                for k in range(self.nelems):
+                    eu = np.dot(He[k, :], ue[k, :])
+                    ev = np.dot(He[k, :], ve[k, :])
+
+                    dfdrhoE[k] += self.density*detJ[k]*np.dot(ev, eu)
+
+        return dfdrhoE
+
     def reduce_vector(self, forces):
         """
         Eliminate essential boundary conditions from the vector
@@ -460,7 +577,7 @@ class TopologyOptimization(ParOpt.Problem):
 
     def compliance_gradient(self, x):
         # Compute the gradient of the compliance
-        dfdC = -1.0*self.adjoint_residual_product(self.u, self.u)
+        dfdC = -1.0*self.stiffness_matrix_derivative(self.u, self.u)
 
         dfdrhoE = np.zeros(self.nelems)
         for i in range(3):
@@ -510,6 +627,90 @@ class TopologyOptimization(ParOpt.Problem):
                 dfdrhoE[:] += detJ
 
         return dfdrhoE
+
+    def frequencies(self, x, k=5, sigma=0.0):
+        """
+        Compute the k-th smallest natural frequencies
+        """
+
+        # Compute the density at each node
+        self.rho = self.fltr.apply(x)
+
+        # Average the density to get the element-wise density
+        self.rhoE = 0.25*(self.rho[self.conn[:, 0]] + self.rho[self.conn[:, 1]] +
+                          self.rho[self.conn[:, 2]] + self.rho[self.conn[:, 3]])
+
+        # Compute the element stiffnesses
+        self.C = np.outer(self.rhoE**self.P, self.C0)
+        self.C = self.C.reshape((self.nelems, 3, 3))
+
+        K = self.assemble_stiffness_matrix(self.C)
+        Kr = self.reduce_matrix(K)
+
+        M = self.assemble_mass_matrix(self.rhoE)
+        Mr = self.reduce_matrix(M)
+
+        # Find the eigenvalues closest to zero. This uses a shift and
+        # invert strategy around sigma = 0, which means that the largest
+        # magnitude values are closest to zero.
+        eigs, ur = sparse.linalg.eigsh(Kr, M=Mr, k=5, sigma=sigma, which='LM', tol=1e-6)
+
+        u = np.zeros((self.nvars, k))
+        for i in range(k):
+            u[self.reduced, i] = ur[:, i]
+
+        return np.sqrt(eigs), u
+
+    def ks_eigenvalue(self, x, ks_rho=100.0, k=5):
+        """
+        Compute the ks minimum eigenvalue
+        """
+        if k > len(self.reduced):
+            k = len(self.reduced)
+
+        self.omega, self.phi = self.frequencies(x, k=k)
+
+        c = np.min(self.omega)
+        self.eta = np.exp(-ks_rho*(self.omega - c))
+        a = np.sum(self.eta)
+        ks_min = c - np.log(a)/ks_rho
+        self.eta *= 1.0/a
+
+        return ks_min
+
+    def ks_eigenvalue_derivative(self, x):
+        """
+        Compute the ks minimum eigenvalue
+        """
+
+        dfdC = np.zeros((self.nelems, 3, 3))
+        dfdrhoM = np.zeros(self.nelems)
+
+        ks_grad = np.zeros(self.nelems)
+        for i in range(len(self.eta)):
+            kx = self.stiffness_matrix_derivative(self.phi[:, i], self.phi[:, i])
+            dfdC += (self.eta[i]/(2*self.omega[i]))*kx
+
+            mx = self.mass_matrix_derivative(self.phi[:, i], self.phi[:, i])
+            dfdrhoM -= (self.omega[i]**2*self.eta[i]/(2*self.omega[i]))*mx
+
+        # Complete the derivative w.r.t. the stiffness matrix
+        dfdrhoE = np.zeros(self.nelems)
+        for i in range(3):
+            for j in range(3):
+                dfdrhoE[:] += self.C0[i,j]*dfdC[:,i,j]
+
+        dfdrhoE[:] *= self.P*(self.rhoE)**(self.P - 1.0)
+
+        # Add the derivative w.r.t. the mass matrix
+        dfdrhoE += dfdrhoM
+
+        dfdrho = np.zeros(self.nnodes)
+        for i in range(4):
+            np.add.at(dfdrho, self.conn[:, i], dfdrhoE)
+        dfdrho *= 0.25
+
+        return self.fltr.applyGradient(dfdrho, x)
 
     def compute_strains(self, u):
         """
@@ -570,7 +771,6 @@ class TopologyOptimization(ParOpt.Problem):
                     strain[k, index, :] = np.dot(Be[k], ue[k, :])
 
         return strain
-
 
     def getVarsAndBounds(self, x, lb, ub):
         """Get the variable values and bounds"""
@@ -700,6 +900,22 @@ else:
 # Create the filter
 fltr = NodeFilter(conn, X, r0, ftype='spatial', projection=False)
 topo = TopologyOptimization(fltr, conn, X, bcs, forces)
+
+eps = 1e-6
+x = 0.95*np.ones(nnodes)
+p = np.random.uniform(size=x.shape)
+
+f0 = topo.ks_eigenvalue(x)
+grad = topo.ks_eigenvalue_derivative(x)
+
+f1 = topo.ks_eigenvalue(x + eps*p)
+
+fd = (f1 - f0)/eps
+ans = np.dot(grad, p)
+
+print('Natural frequency derivative check:')
+print('Finite difference: ', fd)
+print('Result:            ', ans)
 
 topo.checkGradients()
 
