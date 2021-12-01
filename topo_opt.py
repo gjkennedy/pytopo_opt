@@ -772,6 +772,65 @@ class TopologyOptimization(ParOpt.Problem):
 
         return strain
 
+    def compute_strain_derivative(self, dfdstrain):
+        """
+        Compute the strains at each quadrature point
+        """
+
+        # The strain at each quadrature point
+        dfdu = np.zeros(2*self.nnodes)
+
+        # Compute the element stiffness matrix
+        gauss_pts = [-1.0/np.sqrt(3.0), 1.0/np.sqrt(3.0)]
+
+        Be = np.zeros((self.nelems, 3, 8))
+        J = np.zeros((self.nelems, 2, 2))
+        invJ = np.zeros(J.shape)
+
+        # Compute the x and y coordinates of each element
+        xe = self.x[self.conn, 0]
+        ye = self.x[self.conn, 1]
+
+        for j in range(2):
+            for i in range(2):
+                xi = gauss_pts[i]
+                eta = gauss_pts[j]
+                Nxi = np.array([-(1.0 - eta), (1.0 - eta), (1.0 + eta), -(1.0 + eta)])
+                Neta = np.array([-(1.0 - xi), -(1.0 + xi), (1.0 + xi), (1.0 - xi)])
+
+                # Compute the Jacobian transformation at each quadrature points
+                J[:, 0, 0] = np.dot(xe, Nxi)
+                J[:, 1, 0] = np.dot(ye, Nxi)
+                J[:, 0, 1] = np.dot(xe, Neta)
+                J[:, 1, 1] = np.dot(ye, Neta)
+
+                # Compute the inverse of the Jacobian
+                detJ = J[:, 0, 0]*J[:, 1, 1] - J[:, 0, 1]*J[:, 1, 0]
+                invJ[:, 0, 0] = J[:, 1, 1]/detJ
+                invJ[:, 0, 1] = -J[:, 0, 1]/detJ
+                invJ[:, 1, 0] = -J[:, 1, 0]/detJ
+                invJ[:, 1, 1] = J[:, 0, 0]/detJ
+
+                # Compute the derivative of the shape functions w.r.t. xi and eta
+                # [Nx, Ny] = [Nxi, Neta]*invJ
+                Nx = np.outer(invJ[:, 0, 0], Nxi) + np.outer(invJ[:, 1, 0], Neta)
+                Ny = np.outer(invJ[:, 0, 1], Nxi) + np.outer(invJ[:, 1, 1], Neta)
+
+                # Set the B matrix for each element
+                Be[:, 0, ::2] = Nx
+                Be[:, 1, 1::2] = Ny
+                Be[:, 2, ::2] = Ny
+                Be[:, 2, 1::2] = Nx
+
+                index = i + 2*j
+                for k in range(self.nelems):
+                    dfdue = np.dot(Be[k].T, dfdstrain[k, index, :])
+
+                    dfdu[2*self.conn[k, :]] += dfdue[::2]
+                    dfdu[2*self.conn[k, :]+1] += dfdue[1::2]
+
+        return dfdu
+
     def getVarsAndBounds(self, x, lb, ub):
         """Get the variable values and bounds"""
         lb[:] = 1e-3
